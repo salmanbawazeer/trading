@@ -1,4 +1,4 @@
-# coinbase-scalper
+# trading — Coinbase USDT-GBP scalper
 
 A 24/7 passive spread-capture ("scalping") bot for **USDT-GBP on Coinbase Advanced Trade**,
 written in Python, with an optional **TypeSafe AI Jev** decision gate.
@@ -55,7 +55,6 @@ API key scopes: **View + Trade only. Never grant Transfer.**
 ## Quick start
 
 ```bash
-cd coinbase-scalper
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev,jev]"
 cp .env.example .env            # edit keys, MODE, CAPITAL_GBP
