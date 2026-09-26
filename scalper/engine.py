@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -28,6 +29,11 @@ from scalper.strategy.quoter import QuoteParams, Quotes, compute_quotes, size_fo
 log = structlog.get_logger(__name__)
 
 SIDES = ("BUY", "SELL")
+
+
+def _f(v):
+    """Decimal/None -> float/None for JSON."""
+    return None if v is None else float(v)
 
 
 class Engine:
@@ -80,10 +86,16 @@ class Engine:
         self.last_gate: GateDecision | None = None
         self._lock = asyncio.Lock()
         self.run_id = uuid.uuid4().hex[:6]
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.series: deque[dict] = deque(maxlen=2000)  # for the dashboard charts
+        self.last_series_ts = 0.0
+        self.last_quotes: Quotes | None = None
         exchange.set_fill_callback(self.on_fill)
 
     # -- market data --------------------------------------------------------
     async def on_message(self, msg: dict, ts: float) -> None:
+        if self.loop is None:
+            self.loop = asyncio.get_running_loop()
         channel = msg.get("channel")
         if channel == "l2_data":
             for ev in msg.get("events", []):
@@ -196,6 +208,7 @@ class Engine:
             vol = self.vol.range_ticks()
             dev = self.inv.deviation_fraction(mid)
             quotes = compute_quotes(top, fair, vol, dev, self.params)
+            self.last_quotes = quotes
             gate = await self._gate(quotes, top, mid, vol, dev, now)
             desired = {
                 "BUY": quotes.bid if gate.quote_bid else None,
@@ -211,6 +224,20 @@ class Engine:
                 )
                 await self._reconcile(side, price, size, now)
             self._update_metrics(top, fair, dev)
+            if now - self.last_series_ts >= 1:
+                self.last_series_ts = now
+                self.series.append(
+                    {
+                        "ts": now,
+                        "mid": float(mid),
+                        "fair": float(fair),
+                        "equity": float(self.inv.equity(mid)),
+                        "pnl": float(self.inv.pnl(mid)),
+                        "dev": float(dev),
+                        "bid": float(desired["BUY"]) if desired["BUY"] is not None else None,
+                        "ask": float(desired["SELL"]) if desired["SELL"] is not None else None,
+                    }
+                )
             if now - self.last_equity_snapshot >= 10:
                 self.last_equity_snapshot = now
                 self.journal.equity(
@@ -326,6 +353,113 @@ class Engine:
         except Exception as exc:  # noqa: BLE001
             log.error("cancel_all_failed", error=str(exc))
         await self.gate.aclose()
+
+    # -- dashboard ------------------------------------------------------------
+    def request_halt(self, reason: str = "operator") -> None:
+        """Thread-safe: halt quoting and cancel working orders from outside the loop."""
+        self.guards.halt(reason)
+        if self.loop is not None and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._cancel_all_working(f"halt:{reason}"), self.loop)
+
+    def request_resume(self) -> None:
+        self.guards.reset_halt()
+
+    def snapshot(self, depth: int = 8) -> dict:
+        """JSON-safe view of the whole engine for the dashboard."""
+        now = self.clock()
+        top = self.book.top()
+        mid = top.mid
+        bids = sorted(self.book.bids.items(), key=lambda kv: kv[0], reverse=True)[:depth]
+        asks = sorted(self.book.asks.items(), key=lambda kv: kv[0])[:depth]
+        implied = self.fair_model.implied(now)
+        seeded = self.seeded and mid is not None
+        gate = self.last_gate
+        q = self.last_quotes
+        return {
+            "ts": now,
+            "mode": self.s.mode,
+            "product": self.s.product_id,
+            "exchange": getattr(self.exchange, "name", "?"),
+            "tick": str(self.tick),
+            "market": {
+                "mid": _f(mid),
+                "fair": _f(self.last_fair),
+                "implied": _f(implied),
+                "microprice": _f(top.microprice),
+                "best_bid": _f(top.best_bid),
+                "best_ask": _f(top.best_ask),
+                "spread_ticks": _f(top.spread / self.tick) if top.spread is not None else None,
+                "imbalance": _f(self.book.imbalance()),
+                "vol_ticks": _f(self.vol.range_ticks()),
+                "ws_lag_s": round(now - self.last_market_ts, 2) if self.last_market_ts else None,
+                "book_ready": self.book.ready,
+                "refs": {
+                    k: {"price": _f(v.price), "age_s": round(now - v.ts, 1)}
+                    for k, v in self.fair_model.refs.items()
+                },
+            },
+            "book": {
+                "bids": [[_f(p), _f(qy)] for p, qy in bids],
+                "asks": [[_f(p), _f(qy)] for p, qy in asks],
+            },
+            "quotes": {
+                "bid": _f(q.bid) if q else None,
+                "ask": _f(q.ask) if q else None,
+                "half_spread_ticks": _f(q.half_spread_ticks) if q else None,
+                "skew_ticks": _f(q.skew_ticks) if q else None,
+            },
+            "working": [
+                {
+                    "side": w.side,
+                    "price": _f(w.price),
+                    "size": _f(w.size),
+                    "age_s": round(now - w.placed_ts, 1),
+                    "order_id": w.order_id,
+                }
+                for w in self.working.values()
+            ],
+            "position": {
+                "seeded": self.seeded,
+                "gbp": _f(self.inv.gbp),
+                "usdt": _f(self.inv.usdt),
+                "equity": _f(self.inv.equity(mid)) if seeded else None,
+                "pnl": _f(self.inv.pnl(mid)) if seeded else None,
+                "day_pnl": _f(self.inv.day_pnl(mid)) if seeded else None,
+                "fees": _f(self.inv.fees_paid),
+                "deviation": _f(self.inv.deviation_fraction(mid)) if seeded else None,
+                "fills": len(self.inv.fills),
+                "capital": _f(self.s.capital_gbp),
+                "daily_loss_cap": _f(self.guards.daily_loss_cap),
+            },
+            "risk": {
+                "halted": self.guards.halted,
+                "halt_reason": self.guards.halt_reason,
+                "kill_switch": self.guards.kill_switch_present(),
+                "order_notional": _f(self.s.order_notional_gbp),
+                "max_open_orders": self.s.max_open_orders,
+            },
+            "gate": {
+                "enabled": self.gate.enabled,
+                "calls": self.gate.calls,
+                "fallbacks": self.gate.fallbacks,
+                "last": None
+                if gate is None
+                else {
+                    "source": gate.source,
+                    "quote_bid": gate.quote_bid,
+                    "quote_ask": gate.quote_ask,
+                    "size_mult": _f(gate.size_mult),
+                    "p_bid": gate.p_bid,
+                    "p_ask": gate.p_ask,
+                    "score": gate.score,
+                    "latency_ms": round(gate.latency_ms, 1),
+                },
+            },
+            "recent_fills": [
+                {"ts": f.ts, "side": f.side, "price": _f(f.price), "size": _f(f.size), "fee": _f(f.fee)}
+                for f in list(self.inv.fills)[-30:][::-1]
+            ],
+        }
 
     def health(self) -> tuple[bool, dict]:
         now = self.clock()

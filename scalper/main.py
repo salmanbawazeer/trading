@@ -25,6 +25,7 @@ from scalper.journal.store import Journal
 from scalper.marketdata.fair_value import FairValueModel
 from scalper.marketdata.orderbook import OrderBook
 from scalper.marketdata.ws_client import USER_URL, CoinbaseFeed, make_jwt_factory, public_subscriptions
+from scalper.observability.dashboard import DashboardAPI
 from scalper.observability.metrics import start_http_server
 from scalper.risk.fee_check import FeeRates, check_fees
 from scalper.risk.guards import RiskGuards
@@ -191,7 +192,8 @@ async def run_paper(s: Settings) -> None:
     feed = CoinbaseFeed(
         engine.on_message, public_subscriptions(s.product_id, [s.ref_usdt_usd, s.ref_btc_gbp, s.ref_btc_usd])
     )
-    start_http_server(s.metrics_port, engine.health)
+    start_http_server(s.metrics_port, engine.health, DashboardAPI(engine, journal))
+    log.info("dashboard", url=f"http://localhost:{s.metrics_port}/")
     log.info("paper_trading", product=s.product_id, fees=str(fees), meta=str(meta))
     await _run_until_signal([feed.run()], on_stop=[feed.stop])
     await engine.shutdown()
@@ -236,7 +238,8 @@ async def run_live(s: Settings) -> None:
         jwt_factory=make_jwt_factory(s.coinbase_api_key, s.coinbase_api_secret),
         name="user",
     )
-    start_http_server(s.metrics_port, engine.health)
+    start_http_server(s.metrics_port, engine.health, DashboardAPI(engine, journal))
+    log.info("dashboard", url=f"http://localhost:{s.metrics_port}/")
     log.warning(
         "LIVE_TRADING_STARTED", product=s.product_id, fees=str(fees), order_notional=str(s.order_notional_gbp)
     )

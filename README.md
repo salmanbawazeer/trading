@@ -26,6 +26,21 @@ written in Python, with an optional **TypeSafe AI Jev** decision gate.
 
 Grok is a chat connector to Coinbase for manual trades; it is not a bot engine and is not used.
 
+## Dashboard
+
+Paper and live modes serve a sci-fi style HUD at `http://localhost:9108/` on the same port as
+the metrics: position and PnL, market and fair value, working quotes, order-book ladder with
+your own orders highlighted, equity and price charts with hover crosshairs, fills log, Jev gate
+status, and **Halt / Resume / Kill switch** controls. It polls once a second and needs no
+external assets, so it works on an air-gapped VPS.
+
+![HUD](docs/hud.png)
+
+JSON behind it, for your own tooling: `/api/state`, `/api/series`, `/api/fills?limit=50`,
+`/api/equity?limit=500`, and `POST /api/control {"action": "halt|resume|kill_on|kill_off"}`.
+The port is bound to `127.0.0.1` in `docker-compose.yml`; put it behind an SSH tunnel or an
+authenticating reverse proxy before exposing it, there is no login.
+
 ## Risk controls (defaults for < £1,000)
 
 | Guard | Default | Env var |

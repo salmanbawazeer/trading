@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from decimal import Decimal
 from pathlib import Path
 
@@ -33,9 +34,10 @@ class Journal:
         self.mode = mode
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(path), isolation_level=None)
+        self.conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self.lock = threading.Lock()
 
     @staticmethod
     def _s(v) -> str | None:
@@ -129,6 +131,37 @@ class Journal:
                 gate.latency_ms,
             ),
         )
+
+    def recent_fills(self, limit: int = 50) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT ts, side, price, size, fee, order_id FROM fills ORDER BY ts DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [
+            {"ts": r[0], "side": r[1], "price": r[2], "size": r[3], "fee": r[4], "order_id": r[5]}
+            for r in rows
+        ]
+
+    def recent_equity(self, limit: int = 500) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT ts, mid, fair, equity, pnl, day_pnl, usdt FROM equity ORDER BY ts DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        rows.reverse()
+        return [
+            {
+                "ts": r[0],
+                "mid": r[1],
+                "fair": r[2],
+                "equity": r[3],
+                "pnl": r[4],
+                "day_pnl": r[5],
+                "usdt": r[6],
+            }
+            for r in rows
+        ]
 
     def summary(self) -> dict:
         cur = self.conn.execute("SELECT COUNT(*), COALESCE(SUM(CAST(fee AS REAL)),0) FROM fills")
