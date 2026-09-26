@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scalper
+  namespace: scalper
+spec:
+  replicas: 1                    # exactly one quoting process, ever
+  strategy:
+    type: Recreate               # never run old and new pods at the same time
+  selector:
+    matchLabels: { app: scalper }
+  template:
+    metadata:
+      labels: { app: scalper }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9108"
+    spec:
+      terminationGracePeriodSeconds: 30   # SIGTERM -> cancel all orders -> exit
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: scalper
+          image: coinbase-scalper:local     # push to your registry and change this
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: scalper-config }
+            - secretRef: { name: scalper-keys }
+          ports:
+            - { name: metrics, containerPort: 9108 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 4   # ~2 min without fresh market data -> restart
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: scalper-data }

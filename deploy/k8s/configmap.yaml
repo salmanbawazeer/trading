@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scalper-config
+  namespace: scalper
+data:
+  MODE: "paper"                 # switch to "live" only after the go-live checklist
+  # LIVE_TRADING: "I_UNDERSTAND"
+  PRODUCT_ID: "USDT-GBP"
+  CAPITAL_GBP: "1000"
+  ORDER_NOTIONAL_GBP: "25"
+  MAX_INVENTORY_PCT: "0.5"
+  MAX_OPEN_ORDERS: "2"
+  DAILY_LOSS_CAP_PCT: "0.01"
+  STALE_BOOK_SECONDS: "5"
+  MAX_SPREAD_TICKS: "20"
+  MIN_EDGE_TICKS: "1"
+  JEV_ENABLED: "false"
+  DATA_DIR: "/data"
+  METRICS_PORT: "9108"
+  LOG_LEVEL: "INFO"

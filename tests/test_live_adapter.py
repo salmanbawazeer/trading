@@ -1,0 +1,130 @@
+"""Live adapter tests with a fake REST client; no network."""
+
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from scalper.execution import coinbase_live as cl
+
+
+class FakeRest:
+    def __init__(self):
+        self.orders = []
+        self.cancelled = []
+
+    def get_product(self, product_id):
+        return SimpleNamespace(quote_increment="0.0001", base_increment="0.01", base_min_size="1")
+
+    def get_transaction_summary(self, product_type=None):
+        return SimpleNamespace(
+            fee_tier=SimpleNamespace(
+                maker_fee_rate="0", taker_fee_rate="0.00001", pricing_tier="Stable Pairs"
+            )
+        )
+
+    def get_accounts(self, limit=None, cursor=None):
+        return SimpleNamespace(
+            accounts=[
+                SimpleNamespace(currency="GBP", available_balance={"value": "500.5"}),
+                SimpleNamespace(currency="USDT", available_balance={"value": "600"}),
+            ],
+            has_next=False,
+            cursor=None,
+        )
+
+    def limit_order_gtc(self, **kw):
+        self.orders.append(kw)
+        if kw["limit_price"] == "9":
+            return SimpleNamespace(
+                success=False, error_response={"error": "INVALID_PRICE"}, order_id=None, success_response=None
+            )
+        return SimpleNamespace(
+            success=True, order_id="o1", success_response={"order_id": "o1"}, error_response=None
+        )
+
+    def cancel_orders(self, order_ids):
+        self.cancelled.extend(order_ids)
+
+    def list_orders(self, product_ids=None, order_status=None):
+        return SimpleNamespace(
+            orders=[SimpleNamespace(order_id="stale1"), SimpleNamespace(order_id="stale2")]
+        )
+
+
+@pytest.fixture
+def live(monkeypatch):
+    ex = cl.CoinbaseLiveExchange.__new__(cl.CoinbaseLiveExchange)
+    ex.product_id = "USDT-GBP"
+    ex.rest = FakeRest()
+    ex.bucket = cl.TokenBucket(100)
+    ex._fill_cb = None
+    ex._orders = {}
+    ex._filled_so_far = {}
+    return ex
+
+
+async def test_meta_fees_balances(live):
+    meta = await live.product_meta()
+    assert meta.quote_increment == Decimal("0.0001")
+    fees = await live.fee_rates()
+    assert fees.maker == 0 and fees.tier == "Stable Pairs"
+    bal = await live.balances()
+    assert bal == {"GBP": Decimal("500.5"), "USDT": Decimal(600)}
+
+
+async def test_place_cancel_and_cancel_all(live):
+    ack = await live.place_post_only("BUY", Decimal("0.7500"), Decimal("33.33"), "c1")
+    assert ack.accepted and ack.order_id == "o1"
+    assert live.rest.orders[0]["post_only"] is True and live.rest.orders[0]["base_size"] == "33.33"
+    bad = await live.place_post_only("BUY", Decimal(9), Decimal(1), "c2")
+    assert not bad.accepted and bad.reason == "INVALID_PRICE"
+    await live.cancel(["o1"])
+    assert live.rest.cancelled == ["o1"] and await live.open_orders() == []
+    assert await live.cancel_all() == 2
+    assert set(live.rest.cancelled) >= {"stale1", "stale2"}
+
+
+async def test_user_channel_delta_fills(live):
+    fills = []
+
+    async def cb(f):
+        fills.append(f)
+
+    live.set_fill_callback(cb)
+    base = {
+        "product_id": "USDT-GBP",
+        "order_id": "o1",
+        "client_order_id": "c1",
+        "order_side": "BUY",
+        "avg_price": "0.7500",
+        "limit_price": "0.7500",
+    }
+    await live.on_user_order({**base, "status": "OPEN", "cumulative_quantity": "0", "total_fees": "0"}, 1.0)
+    assert fills == []
+    await live.on_user_order(
+        {**base, "status": "OPEN", "cumulative_quantity": "10", "total_fees": "0.001"}, 2.0
+    )
+    await live.on_user_order(
+        {**base, "status": "FILLED", "cumulative_quantity": "30", "total_fees": "0.003"}, 3.0
+    )
+    assert [f.size for f in fills] == [Decimal(10), Decimal(20)]
+    assert sum(f.fee for f in fills) == Decimal("0.003")
+    assert fills[1].side == "BUY" and fills[1].price == Decimal("0.7500")
+    # duplicate delivery of the final state produces no extra fill
+    await live.on_user_order(
+        {**base, "status": "FILLED", "cumulative_quantity": "30", "total_fees": "0.003"}, 4.0
+    )
+    assert len(fills) == 2
+    await live.on_user_order({"product_id": "BTC-GBP", "order_id": "x", "cumulative_quantity": "5"}, 5.0)
+    assert len(fills) == 2
+
+
+async def test_token_bucket_limits_rate():
+    import time
+
+    b = cl.TokenBucket(50, burst=1)
+    t0 = time.monotonic()
+    for _ in range(4):
+        await b.acquire()
+    assert time.monotonic() - t0 >= 0.05

@@ -1,0 +1,29 @@
+# 24/7 runtime for a single VPS.
+#   cp .env.example .env   # fill in keys and MODE
+#   docker compose up -d --build
+#   docker compose logs -f
+services:
+  scalper:
+    build: .
+    image: coinbase-scalper:local
+    restart: always
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - scalper-data:/data
+    ports:
+      - "127.0.0.1:9108:9108"   # /metrics and /healthz, local only
+    stop_grace_period: 30s        # engine cancels all open orders on SIGTERM
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+volumes:
+  scalper-data:

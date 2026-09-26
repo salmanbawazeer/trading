@@ -1,0 +1,37 @@
+[project]
+name = "coinbase-scalper"
+version = "0.1.0"
+description = "Passive spread-capture bot for USDT-GBP on Coinbase Advanced Trade, with optional TypeSafe Jev decision gate"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "coinbase-advanced-py>=1.8",
+  "websockets>=12",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "prometheus-client>=0.20",
+  "structlog>=24",
+]
+
+[project.optional-dependencies]
+jev = ["typesafe-sdk>=0.7"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+scalper = "scalper.main:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["scalper*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
