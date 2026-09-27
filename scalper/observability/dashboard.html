@@ -103,6 +103,11 @@
   .ladder .ours-tag { color: var(--glow); font-size: 10px; letter-spacing: 0.1em; }
   .ladder .mid td { text-align: center; color: var(--amber); background: var(--surface-2); letter-spacing: 0.1em; }
   .side-buy { color: var(--cyan); } .side-sell { color: var(--magenta); }
+  .tally { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 6px; }
+  .tally .s { white-space: normal; line-height: 1.4; }
+  .dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: 0; }
+  .dot.buy { background: var(--cyan); } .dot.sell { background: var(--magenta); }
+  .alltime { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; margin: 4px 0 10px; }
   .empty { color: var(--text-muted); padding: 10px 0; text-align: center; letter-spacing: 0.1em; }
 
   .controls { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -178,6 +183,20 @@
     </div>
   </section>
 
+  <section class="panel c4">
+    <h2>Trades <span id="fills-sub"></span></h2>
+    <div class="stats tally">
+      <div class="stat"><div class="k"><i class="dot buy"></i>Buys</div><div class="v big" id="t-buys">0</div><div class="s" id="t-buy-detail">—</div></div>
+      <div class="stat"><div class="k"><i class="dot sell"></i>Sells</div><div class="v big" id="t-sells">0</div><div class="s" id="t-sell-detail">—</div></div>
+      <div class="stat"><div class="k">Pairs done</div><div class="v big" id="t-pairs">0</div><div class="s" id="t-pair-detail">—</div></div>
+    </div>
+    <div class="alltime" id="t-alltime"></div>
+    <table>
+      <thead><tr><th>time</th><th>side</th><th>price</th><th>size</th><th>fee</th></tr></thead>
+      <tbody id="fills"><tr><td colspan="5" class="empty">NO FILLS YET</td></tr></tbody>
+    </table>
+  </section>
+
   <section class="panel c8">
     <h2>Telemetry <span>equity £, last 2000 s</span></h2>
     <div class="chart" id="ch-equity"><canvas></canvas><div class="tip"></div></div>
@@ -218,13 +237,6 @@
     <div class="kv" id="gate"></div>
   </section>
 
-  <section class="panel c4">
-    <h2>Fills <span id="fills-sub"></span></h2>
-    <table>
-      <thead><tr><th>time</th><th>side</th><th>price</th><th>size</th><th>fee</th></tr></thead>
-      <tbody id="fills"><tr><td colspan="5" class="empty">NO FILLS YET</td></tr></tbody>
-    </table>
-  </section>
 </div>
 
 <script>
@@ -266,7 +278,8 @@
         ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
         ctx.fillText(v.toFixed(opts.decimals ?? 2), pad.l - 6, y + 3);
       }
-      for (let i = 0; i <= 4; i++) { const t = x0 + (x1 - x0) * i / 4; ctx.textAlign = i === 0 ? "left" : i === 4 ? "right" : "center"; ctx.fillText(hhmmss(t), X(t), H - 6); }
+      const nx = W < 520 ? 2 : 4;
+      for (let i = 0; i <= nx; i++) { const t = x0 + (x1 - x0) * i / nx; ctx.textAlign = i === 0 ? "left" : i === nx ? "right" : "center"; ctx.fillText(hhmmss(t), X(t), H - 6); }
       if (opts.zeroLine && y0 < 0 && y1 > 0) { ctx.strokeStyle = css("--line-strong"); ctx.beginPath(); ctx.moveTo(pad.l, Y(0)); ctx.lineTo(W - pad.r, Y(0)); ctx.stroke(); }
       // series: 2px lines
       seriesDefs.forEach(s => {
@@ -364,8 +377,14 @@
     $("gate").innerHTML = `<div>enabled</div><div>${g.enabled ? "YES" : "NO — rules only"}</div><div>calls</div><div>${g.calls} <span style="color:var(--text-muted)">(${g.fallbacks} fallbacks)</span></div>` +
       (gl ? `<div>source</div><div>${gl.source}</div><div>p(bid)</div><div>${gl.p_bid == null ? "—" : gl.p_bid.toFixed(2)} → ${gl.quote_bid ? "QUOTE" : "veto"}</div><div>p(ask)</div><div>${gl.p_ask == null ? "—" : gl.p_ask.toFixed(2)} → ${gl.quote_ask ? "QUOTE" : "veto"}</div><div>size</div><div>×${gl.size_mult}</div><div>latency</div><div>${gl.latency_ms} ms</div>` : `<div>last</div><div>—</div>`);
 
-    $("fills-sub").textContent = s.recent_fills.length ? `last ${s.recent_fills.length}` : "";
-    $("fills").innerHTML = s.recent_fills.length ? s.recent_fills.map(x => `<tr><td>${hhmmss(x.ts)}</td><td class="side-${x.side.toLowerCase()}">${x.side}</td><td>${fmt(x.price)}</td><td>${fmt(x.size, 2)}</td><td>${fmt(x.fee, 5)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">NO FILLS YET</td></tr>`;
+    const T = s.trades.session, A = s.trades.all_time;
+    $("t-buys").textContent = T.buys; $("t-sells").textContent = T.sells; $("t-pairs").textContent = T.pairs;
+    $("t-buy-detail").innerHTML = T.buys ? `${fmt(T.buy_usdt, 2)} USDT<br>avg ${fmt(T.avg_buy)}` : "none yet";
+    $("t-sell-detail").innerHTML = T.sells ? `${fmt(T.sell_usdt, 2)} USDT<br>avg ${fmt(T.avg_sell)}` : "none yet";
+    $("t-pair-detail").innerHTML = T.pairs ? `spread ${money(T.captured_gbp)}<br>fees £${fmt(T.fees_gbp, 4)}<br>net ${money(T.net_gbp)}` : "needs a buy and a sell";
+    $("t-alltime").textContent = `ALL TIME (${s.mode.toUpperCase()}): ${A.buys} buys · ${A.sells} sells · ${A.pairs} pairs · net ${money(A.net_gbp)}`;
+    $("fills-sub").textContent = "this session";
+    $("fills").innerHTML = s.recent_fills.length ? s.recent_fills.slice(0, 12).map(x => `<tr><td>${hhmmss(x.ts)}</td><td class="side-${x.side.toLowerCase()}">${x.side}</td><td>${fmt(x.price)}</td><td>${fmt(x.size, 2)}</td><td>${fmt(x.fee, 5)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">NO FILLS YET</td></tr>`;
   }
 
   // ---------- polling ----------

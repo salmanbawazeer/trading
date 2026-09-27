@@ -163,6 +163,17 @@ class Journal:
             for r in rows
         ]
 
+    def fill_aggregates(self) -> dict[str, tuple[int, float, float, float]]:
+        """All fills for this journal's mode: {side: (count, qty, notional, fees)}."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT side, COUNT(*), COALESCE(SUM(CAST(size AS REAL)), 0),"
+                " COALESCE(SUM(CAST(price AS REAL) * CAST(size AS REAL)), 0),"
+                " COALESCE(SUM(CAST(fee AS REAL)), 0) FROM fills WHERE mode = ? GROUP BY side",
+                (self.mode,),
+            ).fetchall()
+        return {r[0]: (int(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in rows}
+
     def summary(self) -> dict:
         cur = self.conn.execute("SELECT COUNT(*), COALESCE(SUM(CAST(fee AS REAL)),0) FROM fills")
         n_fills, fees = cur.fetchone()

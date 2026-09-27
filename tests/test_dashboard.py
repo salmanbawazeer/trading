@@ -52,6 +52,13 @@ async def test_snapshot_is_json_safe_and_complete(served):
     assert snap["quotes"]["bid"] == 0.75 and snap["quotes"]["ask"] >= 0.7502
     assert snap["gate"]["enabled"] is False
     assert len(engine.series) >= 2
+    t = snap["trades"]["session"]
+    assert (t["buys"], t["sells"], t["pairs"]) == (1, 1, 1)
+    assert t["avg_buy"] == 0.75 and t["avg_sell"] == 0.7502 and t["net_gbp"] > 0
+    # all-time comes from the journal; a fresh journal holds exactly this session
+    a = snap["trades"]["all_time"]
+    assert (a["buys"], a["sells"], a["pairs"]) == (1, 1, 1)
+    assert a["net_gbp"] == pytest.approx(t["net_gbp"])
 
 
 async def test_http_routes(served):

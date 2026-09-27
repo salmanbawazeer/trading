@@ -25,6 +25,7 @@ from scalper.observability import metrics as m
 from scalper.risk.guards import RiskGuards
 from scalper.strategy.inventory import Fill, Inventory
 from scalper.strategy.quoter import QuoteParams, Quotes, compute_quotes, size_for_notional
+from scalper.strategy.stats import aggregate, summarize
 
 log = structlog.get_logger(__name__)
 
@@ -459,6 +460,14 @@ class Engine:
                 {"ts": f.ts, "side": f.side, "price": _f(f.price), "size": _f(f.size), "fee": _f(f.fee)}
                 for f in list(self.inv.fills)[-30:][::-1]
             ],
+            "trades": {
+                "session": summarize(
+                    aggregate(
+                        (f.side, float(f.price), float(f.size), float(f.fee)) for f in list(self.inv.fills)
+                    )
+                ),
+                "all_time": summarize(self.journal.fill_aggregates()),
+            },
         }
 
     def health(self) -> tuple[bool, dict]:
