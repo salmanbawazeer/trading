@@ -111,6 +111,18 @@ colima start
 Docker is only needed for the always-on server. On a laptop, `python -m scalper paper` runs
 without it.
 
+**If the container will not start**, read its log first:
+
+```bash
+docker compose logs --tail=50 scalper
+```
+
+Configuration problems do not crash-loop. The fee check failing, a bad API key, or live mode
+not armed puts the bot in a **BLOCKED** state: it stays up, places no orders, and shows the
+reason at `http://localhost:9108/`. Fix `.env`, then `docker compose up -d --force-recreate`.
+A container that keeps restarting has hit something else, such as a network outage, and the
+log will say what.
+
 `restart: always`, a health check, a 30 s stop grace so SIGTERM cancels open orders, and a
 named volume for the SQLite journal and recordings. Host it in AWS us-east-1 (Coinbase's
 region) for the lowest latency.

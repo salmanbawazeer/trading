@@ -17,5 +17,6 @@ data:
   MIN_EDGE_TICKS: "1"
   JEV_ENABLED: "false"
   DATA_DIR: "/data"
+  PARK_ON_FATAL: "true"
   METRICS_PORT: "9108"
   LOG_LEVEL: "INFO"

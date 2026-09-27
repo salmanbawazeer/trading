@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # rate limiting for private REST calls
     rest_requests_per_second: float = 5.0
 
+    # When a configuration problem stops paper/live from starting (fees not viable, bad
+    # API key, live not armed), stay up and show the reason on the dashboard instead of
+    # exiting. Set in Docker/Kubernetes so `restart: always` does not crash-loop.
+    park_on_fatal: bool = False
+
     # storage / observability
     data_dir: Path = Path("./data")
     metrics_port: int = 9108
@@ -79,6 +84,15 @@ class Settings(BaseSettings):
     @classmethod
     def _strip(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("coinbase_api_secret")
+    @classmethod
+    def _unescape_newlines(cls, v: str | None) -> str | None:
+        # A PEM key pasted on one line as "...\n..." reaches us with literal backslash-n
+        # when the loader does not expand escapes (some Docker/Kubernetes setups).
+        if v and "\\n" in v and "\n" not in v:
+            v = v.replace("\\n", "\n")
+        return v.strip() + "\n" if v and v.strip().startswith("-----BEGIN") else v
 
     @property
     def is_live(self) -> bool:

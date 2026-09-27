@@ -25,13 +25,17 @@ from scalper.journal.store import Journal
 from scalper.marketdata.fair_value import FairValueModel
 from scalper.marketdata.orderbook import OrderBook
 from scalper.marketdata.ws_client import USER_URL, CoinbaseFeed, make_jwt_factory, public_subscriptions
-from scalper.observability.dashboard import DashboardAPI
+from scalper.observability.dashboard import BlockedDashboard, DashboardAPI
 from scalper.observability.metrics import start_http_server
 from scalper.risk.fee_check import FeeRates, check_fees
 from scalper.risk.guards import RiskGuards
 from scalper.strategy.inventory import Inventory
 
 log = structlog.get_logger("scalper")
+
+
+class FatalConfigError(Exception):
+    """A setup problem that restarting will not fix: needs the operator to change something."""
 
 
 def configure_logging(level: str) -> None:
@@ -151,8 +155,24 @@ async def _resolve_meta_and_fees(s: Settings):
     live = CoinbaseLiveExchange(
         s.product_id, s.coinbase_api_key, s.coinbase_api_secret, s.rest_requests_per_second
     )
-    meta = await live.product_meta()
-    fees = await live.fee_rates()
+    from requests.exceptions import HTTPError
+
+    try:
+        meta = await live.product_meta()
+        fees = await live.fee_rates()
+    except ValueError as exc:  # raised by the SDK while parsing the private key
+        raise FatalConfigError(
+            f"COINBASE_API_SECRET could not be read as a private key ({exc}). Paste the privateKey "
+            "value from the CDP key JSON, keeping the BEGIN/END lines."
+        ) from exc
+    except HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status in (401, 403):
+            raise FatalConfigError(
+                f"Coinbase rejected the API key (HTTP {status}). Check COINBASE_API_KEY is the full "
+                "'organizations/.../apiKeys/...' name, the secret matches it, and the key has View + Trade."
+            ) from exc
+        raise
     return meta, fees, live
 
 
@@ -167,7 +187,10 @@ def enforce_fee_check(s: Settings, fees: FeeRates, meta: ProductMeta, ref_price:
                 detail="ALLOW_UNPROFITABLE_FEES=true; paper trading for data collection only",
             )
             return
-        raise SystemExit(2)
+        hint = (
+            " For paper-only data collection set ALLOW_UNPROFITABLE_FEES=true." if s.mode == "paper" else ""
+        )
+        raise FatalConfigError(res.message + hint)
 
 
 async def run_paper(s: Settings) -> None:
@@ -204,9 +227,9 @@ async def run_paper(s: Settings) -> None:
 
 async def run_live(s: Settings) -> None:
     if not s.live_armed:
-        raise SystemExit("MODE=live requires LIVE_TRADING=I_UNDERSTAND")
+        raise FatalConfigError("MODE=live requires LIVE_TRADING=I_UNDERSTAND")
     if not s.has_api_key:
-        raise SystemExit("MODE=live requires COINBASE_API_KEY and COINBASE_API_SECRET")
+        raise FatalConfigError("MODE=live requires COINBASE_API_KEY and COINBASE_API_SECRET")
     meta, fees, live = await _resolve_meta_and_fees(s)
     assert live is not None
     enforce_fee_check(s, fees, meta, ref_price=Decimal("0.75"))
@@ -296,6 +319,30 @@ def cli(argv: list[str] | None = None) -> None:
         asyncio.run(runner(s))
     except KeyboardInterrupt:
         pass
+    except FatalConfigError as exc:
+        log.error("blocked", reason=str(exc))
+        print(f"\nBLOCKED: {exc}\n", file=sys.stderr)
+        if s.park_on_fatal:
+            asyncio.run(park(s, str(exc)))
+        raise SystemExit(2) from None
+
+
+async def park(s: Settings, reason: str) -> None:
+    """Stay alive without trading and show why, so a restart policy does not crash-loop."""
+    started = time.time()
+
+    def health() -> tuple[bool, dict]:
+        # 200 on purpose: restarting cannot fix a configuration problem.
+        return True, {"mode": s.mode, "blocked": True, "reason": reason, "since": started}
+
+    start_http_server(s.metrics_port, health, BlockedDashboard(s.mode, s.product_id, reason, started))
+    log.error(
+        "parked",
+        reason=reason,
+        detail="not trading; fix the configuration and restart the container",
+        dashboard=f"http://localhost:{s.metrics_port}/",
+    )
+    await _run_until_signal([asyncio.Event().wait()], on_stop=[])
 
 
 if __name__ == "__main__":

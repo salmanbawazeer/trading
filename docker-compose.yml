@@ -10,6 +10,7 @@ services:
     env_file: .env
     environment:
       DATA_DIR: /data
+      PARK_ON_FATAL: "true"       # config errors show on the dashboard instead of a restart loop
     volumes:
       - scalper-data:/data
     ports:
