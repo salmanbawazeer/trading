@@ -89,11 +89,27 @@ daily-loss halt is never "fixed" by an automatic restart).
 
 **Docker Compose on a VPS (recommended):**
 
+You need Docker Engine plus the Compose v2 plugin. Check with `docker compose version`.
+
 ```bash
 cp .env.example .env && $EDITOR .env
 docker compose up -d --build
 docker compose logs -f
 ```
+
+If you get `unknown shorthand flag: 'd' in -d`, the Compose plugin is missing. This is common
+on a Mac after `brew install docker`, which installs only the client. Either install Docker
+Desktop, or use Homebrew:
+
+```bash
+brew install docker-compose colima
+mkdir -p ~/.docker/cli-plugins
+ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" ~/.docker/cli-plugins/docker-compose
+colima start
+```
+
+Docker is only needed for the always-on server. On a laptop, `python -m scalper paper` runs
+without it.
 
 `restart: always`, a health check, a 30 s stop grace so SIGTERM cancels open orders, and a
 named volume for the SQLite journal and recordings. Host it in AWS us-east-1 (Coinbase's
