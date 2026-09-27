@@ -41,6 +41,24 @@ JSON behind it, for your own tooling: `/api/state`, `/api/series`, `/api/fills?l
 The port is bound to `127.0.0.1` in `docker-compose.yml`; put it behind an SSH tunnel or an
 authenticating reverse proxy before exposing it, there is no login.
 
+## Restarts keep your account
+
+Paper and live mode save their state in the journal at `data/journal.sqlite`. In Docker it
+lives on the `scalper-data` volume. After a restart, a rebuild or a crash the bot picks up
+where it left off:
+
+- **Paper:** GBP and USDT balances, PnL since the account started, today's PnL, and fees paid.
+- **Paper and live:** open trades for the profit lock, plus the full fill history and buy/sell
+  counts on the dashboard.
+- **Live:** balances are always read from Coinbase. The PnL baseline comes from the journal.
+
+Resting orders are still cancelled on shutdown and re-posted on startup. That is deliberate,
+so nothing is left on the book while the bot is down.
+
+To start the paper account over, press **Reset paper** on the dashboard. Balances go back to
+`CAPITAL_GBP`, and counts and open trades start from zero. Old fills stay in the journal but
+are no longer counted. `docker compose down -v` deletes the volume and everything in it.
+
 ## Profit lock
 
 On by default (`PROFIT_LOCK=true`). Every fill is recorded as an open trade until the opposite

@@ -54,7 +54,7 @@ def synthetic_recording(path):
 ZERO_MAKER = FeeRates(Decimal(0), Decimal("0.00001"))
 
 
-def build(settings, meta, fees=ZERO_MAKER):
+def build(settings, meta, fees=ZERO_MAKER, journal=None):
     book = OrderBook(settings.product_id)
     fair = FairValueModel(
         "USDT-USD", "BTC-GBP", "BTC-USD", settings.fair_blend_weight, settings.ref_price_max_age_s
@@ -71,7 +71,7 @@ def build(settings, meta, fees=ZERO_MAKER):
     )
     clock = SimClock()
     ex = PaperExchange(meta, fees, book, {"GBP": Decimal(1000), "USDT": Decimal(0)}, clock)
-    journal = Journal(":memory:", "backtest")
+    journal = journal or Journal(":memory:", "backtest")
     engine = Engine(
         settings,
         ex,

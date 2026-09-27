@@ -27,7 +27,7 @@ from scalper.risk.guards import RiskGuards
 from scalper.strategy.inventory import Fill, Inventory
 from scalper.strategy.lots import LotBook
 from scalper.strategy.quoter import QuoteParams, Quotes, compute_quotes, size_for_notional
-from scalper.strategy.stats import aggregate, summarize
+from scalper.strategy.stats import summarize
 
 log = structlog.get_logger(__name__)
 
@@ -97,9 +97,15 @@ class Engine:
         self.last_series_ts = 0.0
         self.last_quotes: Quotes | None = None
         exchange.set_fill_callback(self.on_fill)
-        if seed_from_exchange:
-            # Live: real balances persist across restarts, so the open trades must too.
-            for ts, side, price, size in journal.all_fills():
+        # Paper and live keep their account, open trades and history across restarts.
+        # Backtests always start clean.
+        self.persist = settings.mode in ("paper", "live")
+        self.account = journal.load_account() if (self.persist or seed_from_exchange) else None
+        since = self.account.get("since_ts") if self.account else None
+        self.since_ts = float(since) if since is not None else 0.0
+        self.run_counts = {"BUY": 0, "SELL": 0}
+        if self.persist or seed_from_exchange:
+            for ts, side, price, size, _fee in journal.all_fills(self.since_ts):
                 self.lots.apply(side, Decimal(price), Decimal(size), ts)
             if self.lots.buys or self.lots.sells:
                 log.info("open_trades_restored", buys=len(self.lots.buys), sells=len(self.lots.sells))
@@ -142,16 +148,79 @@ class Engine:
             return
         mid = self.book.top().mid
         assert mid is not None
+        acct = self.account
+        today = self._day(ts)
+        restored = False
         if self.seed_from_exchange:
+            # Live: balances always come from the exchange; PnL baselines come from the journal.
             bal = await self.exchange.balances()
             base, quote = self.s.product_id.split("-")
             self.inv.seed(bal.get(quote, Decimal(0)), bal.get(base, Decimal(0)), mid)
+            if acct and acct.get("start_equity"):
+                self.inv.start_equity = Decimal(acct["start_equity"])
+                self.inv.fees_paid = Decimal(acct.get("fees_paid") or "0")
+                if acct.get("day") == today and acct.get("day_start_equity"):
+                    self.inv.day_start_equity = Decimal(acct["day_start_equity"])
+                restored = True
+        elif acct and acct.get("gbp") is not None:
+            # Paper: pick up the saved pretend account exactly where it was left.
+            self.inv.restore(
+                Decimal(acct["gbp"]),
+                Decimal(acct["usdt"]),
+                Decimal(acct["start_equity"]),
+                Decimal(acct["day_start_equity"]),
+                Decimal(acct.get("fees_paid") or "0"),
+            )
+            if acct.get("day") != today:
+                self.inv.roll_day(mid)
+            restored = True
         else:
-            usdt_gbp = self.s.capital_gbp * self.s.target_usdt_fraction
-            self.inv.seed(self.s.capital_gbp - usdt_gbp, (usdt_gbp / mid).quantize(Decimal("0.01")), mid)
+            self._fresh_paper_seed(mid)
+            if self.persist and acct is None:
+                past = self.journal.all_fills(0.0)
+                if past:
+                    # Fills recorded before accounts were saved: rebuild the account from them.
+                    for f_ts, side, price, size, fee in past:
+                        self.inv.apply_fill(
+                            Fill("", "", side, Decimal(price), Decimal(size), Decimal(fee or "0"), f_ts)
+                        )
+                    self.inv.fills.clear()
+                    self.inv.roll_day(mid)
+                    self.since_ts = float(past[0][0])
+                    restored = True
+                else:
+                    self.since_ts = ts
         self.seeded = True
-        self.current_day = self._day(ts)
-        log.info("inventory_seeded", gbp=str(self.inv.gbp), usdt=str(self.inv.usdt), mid=str(mid))
+        self.current_day = today
+        if self.persist:
+            self._save_account(ts)
+        log.info(
+            "inventory_seeded",
+            restored=restored,
+            gbp=str(self.inv.gbp),
+            usdt=str(self.inv.usdt),
+            mid=str(mid),
+            since=self.since_ts,
+        )
+
+    def _fresh_paper_seed(self, mid: Decimal) -> None:
+        usdt_gbp = self.s.capital_gbp * self.s.target_usdt_fraction
+        self.inv.seed(self.s.capital_gbp - usdt_gbp, (usdt_gbp / mid).quantize(Decimal("0.01")), mid)
+
+    def _save_account(self, now: float) -> None:
+        if not self.persist:
+            return
+        seeded = self.seeded
+        self.journal.save_account(
+            since_ts=self.since_ts,
+            gbp=self.inv.gbp if seeded else None,
+            usdt=self.inv.usdt if seeded else None,
+            start_equity=self.inv.start_equity if seeded else None,
+            day=self.current_day,
+            day_start_equity=self.inv.day_start_equity if seeded else None,
+            fees_paid=self.inv.fees_paid,
+            updated_ts=now,
+        )
 
     @staticmethod
     def _day(ts: float) -> str:
@@ -161,6 +230,7 @@ class Engine:
     async def on_fill(self, fill: Fill) -> None:
         self.inv.apply_fill(fill)
         self.lots.apply(fill.side, fill.price, fill.size, fill.ts)
+        self.run_counts[fill.side] = self.run_counts.get(fill.side, 0) + 1
         self.last_fill = fill
         w = self.working.get(fill.side)
         if w is not None and w.order_id == fill.order_id:
@@ -263,6 +333,7 @@ class Engine:
                     self.inv.pnl(mid),
                     self.inv.day_pnl(mid),
                 )
+                self._save_account(now)
 
     def profit_limits(self) -> tuple[Decimal | None, Decimal | None]:
         """(ask floor, bid ceiling) from open trades, or (None, None) when the lock is off."""
@@ -353,6 +424,7 @@ class Engine:
             mid = self.book.top().mid
             if mid is not None:
                 self.inv.roll_day(mid)
+            self._save_account(now)
             if self.guards.halted and self.guards.halt_reason.startswith("daily_loss_cap"):
                 self.guards.reset_halt()
                 log.info("daily_loss_halt_reset", day=day)
@@ -374,6 +446,8 @@ class Engine:
     # -- lifecycle ------------------------------------------------------------
     async def shutdown(self) -> None:
         await self._cancel_all_working("shutdown")
+        if self.seeded:
+            self._save_account(self.clock())
         try:
             n = await self.exchange.cancel_all()
             if n:
@@ -494,18 +568,52 @@ class Engine:
                 },
             },
             "recent_fills": [
-                {"ts": f.ts, "side": f.side, "price": _f(f.price), "size": _f(f.size), "fee": _f(f.fee)}
-                for f in list(self.inv.fills)[-30:][::-1]
+                {
+                    "ts": r["ts"],
+                    "side": r["side"],
+                    "price": float(r["price"]),
+                    "size": float(r["size"]),
+                    "fee": float(r["fee"]),
+                }
+                for r in self.journal.recent_fills(30, self.since_ts)
             ],
             "trades": {
-                "session": summarize(
-                    aggregate(
-                        (f.side, float(f.price), float(f.size), float(f.fee)) for f in list(self.inv.fills)
-                    )
-                ),
-                "all_time": summarize(self.journal.fill_aggregates()),
+                "since_ts": self.since_ts,
+                "account": summarize(self.journal.fill_aggregates(self.since_ts)),
+                "run": {"buys": self.run_counts.get("BUY", 0), "sells": self.run_counts.get("SELL", 0)},
             },
         }
+
+    def request_paper_reset(self, timeout: float = 5.0) -> dict:
+        """Thread-safe: wipe the paper account and start again from CAPITAL_GBP. Paper mode only."""
+        if self.s.mode != "paper":
+            return {"ok": False, "error": "reset is only available in paper mode"}
+        if self.loop is None or not self.loop.is_running():
+            return {"ok": False, "error": "engine is not running yet"}
+        asyncio.run_coroutine_threadsafe(self.reset_paper(), self.loop).result(timeout=timeout)
+        return {"ok": True, "since_ts": self.since_ts}
+
+    async def reset_paper(self) -> None:
+        async with self._lock:
+            await self._cancel_all_working("paper_reset")
+            now = self.clock()
+            self.since_ts = now
+            self.lots = LotBook(dust=self.meta.base_min_size)
+            self.inv.fills.clear()
+            self.inv.fees_paid = Decimal(0)
+            self.run_counts = {"BUY": 0, "SELL": 0}
+            self.series.clear()
+            self.last_fill = None
+            mid = self.book.top().mid
+            if mid is not None:
+                self._fresh_paper_seed(mid)
+                self.seeded = True
+                self.current_day = self._day(now)
+            else:
+                self.seeded = False
+            self.account = {"since_ts": now}
+            self._save_account(now)
+            log.warning("paper_account_reset", since=now, gbp=str(self.inv.gbp), usdt=str(self.inv.usdt))
 
     def health(self) -> tuple[bool, dict]:
         now = self.clock()

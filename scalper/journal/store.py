@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS decisions (
   gate_quote_bid INTEGER, gate_quote_ask INTEGER, gate_size_mult TEXT,
   p_bid REAL, p_ask REAL, score REAL, latency_ms REAL
 );
+CREATE TABLE IF NOT EXISTS account (
+  mode TEXT PRIMARY KEY, since_ts REAL, gbp TEXT, usdt TEXT, start_equity TEXT,
+  day TEXT, day_start_equity TEXT, fees_paid TEXT, updated_ts REAL
+);
 CREATE INDEX IF NOT EXISTS fills_ts ON fills(ts);
 CREATE INDEX IF NOT EXISTS equity_ts ON equity(ts);
 """
@@ -132,11 +136,12 @@ class Journal:
             ),
         )
 
-    def recent_fills(self, limit: int = 50) -> list[dict]:
+    def recent_fills(self, limit: int = 50, since_ts: float = 0.0) -> list[dict]:
         with self.lock:
             rows = self.conn.execute(
-                "SELECT ts, side, price, size, fee, order_id FROM fills ORDER BY ts DESC LIMIT ?",
-                (int(limit),),
+                "SELECT ts, side, price, size, fee, order_id FROM fills WHERE mode = ? AND ts >= ?"
+                " ORDER BY ts DESC, rowid DESC LIMIT ?",
+                (self.mode, since_ts, int(limit)),
             ).fetchall()
         return [
             {"ts": r[0], "side": r[1], "price": r[2], "size": r[3], "fee": r[4], "order_id": r[5]}
@@ -163,23 +168,53 @@ class Journal:
             for r in rows
         ]
 
-    def all_fills(self) -> list[tuple[float, str, str, str]]:
-        """(ts, side, price, size) for this journal's mode, oldest first."""
+    def all_fills(self, since_ts: float = 0.0) -> list[tuple[float, str, str, str, str]]:
+        """(ts, side, price, size, fee) for this journal's mode, oldest first."""
         with self.lock:
             return self.conn.execute(
-                "SELECT ts, side, price, size FROM fills WHERE mode = ? ORDER BY ts, rowid", (self.mode,)
+                "SELECT ts, side, price, size, fee FROM fills WHERE mode = ? AND ts >= ? ORDER BY ts, rowid",
+                (self.mode, since_ts),
             ).fetchall()
 
-    def fill_aggregates(self) -> dict[str, tuple[int, float, float, float]]:
-        """All fills for this journal's mode: {side: (count, qty, notional, fees)}."""
+    def fill_aggregates(self, since_ts: float = 0.0) -> dict[str, tuple[int, float, float, float]]:
+        """Fills for this journal's mode since `since_ts`: {side: (count, qty, notional, fees)}."""
         with self.lock:
             rows = self.conn.execute(
                 "SELECT side, COUNT(*), COALESCE(SUM(CAST(size AS REAL)), 0),"
                 " COALESCE(SUM(CAST(price AS REAL) * CAST(size AS REAL)), 0),"
-                " COALESCE(SUM(CAST(fee AS REAL)), 0) FROM fills WHERE mode = ? GROUP BY side",
-                (self.mode,),
+                " COALESCE(SUM(CAST(fee AS REAL)), 0) FROM fills WHERE mode = ? AND ts >= ? GROUP BY side",
+                (self.mode, since_ts),
             ).fetchall()
         return {r[0]: (int(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in rows}
+
+    # -- account state, so paper/live survive restarts ------------------------
+    ACCOUNT_FIELDS = (
+        "since_ts",
+        "gbp",
+        "usdt",
+        "start_equity",
+        "day",
+        "day_start_equity",
+        "fees_paid",
+        "updated_ts",
+    )
+
+    def load_account(self) -> dict | None:
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT " + ", ".join(self.ACCOUNT_FIELDS) + " FROM account WHERE mode = ?", (self.mode,)
+            ).fetchone()
+        return dict(zip(self.ACCOUNT_FIELDS, row, strict=True)) if row else None
+
+    def save_account(self, **fields) -> None:
+        vals = [fields.get(k) for k in self.ACCOUNT_FIELDS]
+        vals = [str(v) if isinstance(v, Decimal) else v for v in vals]
+        with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO account (mode, " + ", ".join(self.ACCOUNT_FIELDS) + ")"
+                " VALUES (?" + ", ?" * len(self.ACCOUNT_FIELDS) + ")",
+                (self.mode, *vals),
+            )
 
     def summary(self) -> dict:
         cur = self.conn.execute("SELECT COUNT(*), COALESCE(SUM(CAST(fee AS REAL)),0) FROM fills")

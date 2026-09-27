@@ -22,7 +22,7 @@ class DashboardAPI:
         return list(self.engine.series)
 
     def fills(self, limit: int = 50) -> list[dict]:
-        return self.journal.recent_fills(limit)
+        return self.journal.recent_fills(limit, self.engine.since_ts)
 
     def equity(self, limit: int = 500) -> list[dict]:
         return self.journal.recent_equity(limit)
@@ -37,6 +37,10 @@ class DashboardAPI:
             g.kill_switch_path.parent.mkdir(parents=True, exist_ok=True)
             g.kill_switch_path.write_text("engaged from dashboard\n")
             self.engine.request_halt("kill_switch")
+        elif action == "reset_paper":
+            result = self.engine.request_paper_reset()
+            if not result.get("ok"):
+                return result
         elif action == "kill_off":
             if g.kill_switch_path.exists():
                 g.kill_switch_path.unlink()

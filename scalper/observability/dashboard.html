@@ -111,6 +111,7 @@
   .empty { color: var(--text-muted); padding: 10px 0; text-align: center; letter-spacing: 0.1em; }
 
   .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+  button[hidden] { display: none; }
   button {
     font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; cursor: pointer;
     background: transparent; color: var(--glow); border: 1px solid var(--glow); padding: 10px 16px; min-width: 120px;
@@ -225,6 +226,7 @@
       <button id="b-resume">Resume</button>
       <button id="b-kill" class="danger">Kill switch</button>
       <button id="b-unkill">Clear kill</button>
+      <button id="b-reset" class="danger" hidden>Reset paper</button>
     </div>
     <div class="msg" id="ctl-msg"></div>
     <div class="kv" style="margin-top:12px">
@@ -250,6 +252,9 @@
   const money = (v) => v === null || v === undefined ? "—" : (v >= 0 ? "+" : "−") + "£" + Math.abs(v).toFixed(4);
   const signCls = (el, v) => { el.classList.toggle("pos", v > 0); el.classList.toggle("neg", v < 0); };
   const hhmmss = (ts) => new Date(ts * 1000).toISOString().slice(11, 19);
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const dayLabel = (ts) => { const d = new Date(ts * 1000); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
+  const whenLabel = (ts, now) => dayLabel(ts) === dayLabel(now) ? hhmmss(ts) : `${dayLabel(ts)} ${hhmmss(ts).slice(0, 5)}`;
   const light = (id, state, label) => { const el = $(id); el.className = "light " + state; if (label) el.querySelector("span").textContent = label; };
 
   // ---------- charts: single-axis line charts with crosshair tooltip ----------
@@ -339,7 +344,7 @@
     $("cap-left").textContent = p.day_pnl != null ? `cap −£${p.daily_loss_cap.toFixed(2)} · room £${(p.daily_loss_cap + Math.min(0, p.day_pnl)).toFixed(2)}` : "";
     $("equity").textContent = fmt(p.equity, 3); $("fees").textContent = fmt(p.fees, 4);
     $("gbp").textContent = fmt(p.gbp, 2); $("usdt").textContent = fmt(p.usdt, 2);
-    $("pos-sub").textContent = p.seeded ? `${p.fills} fills` : "not seeded";
+    $("pos-sub").textContent = !p.seeded ? "not seeded" : s.trades.since_ts ? `since ${whenLabel(s.trades.since_ts, s.ts)}` : "";
     const dev = p.deviation ?? 0;
     $("dev-v").textContent = fmt(dev, 2);
     $("dev-mark").style.left = (50 + dev * 50) + "%";
@@ -378,19 +383,20 @@
     $("r-cap").textContent = "£" + fmt(p.daily_loss_cap, 2);
     $("b-halt").disabled = r.halted; $("b-resume").disabled = !r.halted || r.kill_switch;
     $("b-kill").disabled = r.kill_switch; $("b-unkill").disabled = !r.kill_switch;
+    $("b-reset").hidden = s.mode !== "paper";
 
     const g = s.gate, gl = g.last;
     $("gate").innerHTML = `<div>enabled</div><div>${g.enabled ? "YES" : "NO — rules only"}</div><div>calls</div><div>${g.calls} <span style="color:var(--text-muted)">(${g.fallbacks} fallbacks)</span></div>` +
       (gl ? `<div>source</div><div>${gl.source}</div><div>p(bid)</div><div>${gl.p_bid == null ? "—" : gl.p_bid.toFixed(2)} → ${gl.quote_bid ? "QUOTE" : "veto"}</div><div>p(ask)</div><div>${gl.p_ask == null ? "—" : gl.p_ask.toFixed(2)} → ${gl.quote_ask ? "QUOTE" : "veto"}</div><div>size</div><div>×${gl.size_mult}</div><div>latency</div><div>${gl.latency_ms} ms</div>` : `<div>last</div><div>—</div>`);
 
-    const T = s.trades.session, A = s.trades.all_time;
+    const T = s.trades.account, R = s.trades.run;
     $("t-buys").textContent = T.buys; $("t-sells").textContent = T.sells; $("t-pairs").textContent = T.pairs;
     $("t-buy-detail").innerHTML = T.buys ? `${fmt(T.buy_usdt, 2)} USDT<br>avg ${fmt(T.avg_buy)}` : "none yet";
     $("t-sell-detail").innerHTML = T.sells ? `${fmt(T.sell_usdt, 2)} USDT<br>avg ${fmt(T.avg_sell)}` : "none yet";
     $("t-pair-detail").innerHTML = T.pairs ? `spread ${money(T.captured_gbp)}<br>fees £${fmt(T.fees_gbp, 4)}<br>net ${money(T.net_gbp)}` : "needs a buy and a sell";
-    $("t-alltime").textContent = `ALL TIME (${s.mode.toUpperCase()}): ${A.buys} buys · ${A.sells} sells · ${A.pairs} pairs · net ${money(A.net_gbp)}`;
-    $("fills-sub").textContent = "this session";
-    $("fills").innerHTML = s.recent_fills.length ? s.recent_fills.slice(0, 12).map(x => `<tr><td>${hhmmss(x.ts)}</td><td class="side-${x.side.toLowerCase()}">${x.side}</td><td>${fmt(x.price)}</td><td>${fmt(x.size, 2)}</td><td>${fmt(x.fee, 5)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">NO FILLS YET</td></tr>`;
+    $("t-alltime").textContent = `SINCE ${s.trades.since_ts ? whenLabel(s.trades.since_ts, s.ts).toUpperCase() : "START"} · THIS RUN: ${R.buys} buys · ${R.sells} sells`;
+    $("fills-sub").textContent = s.mode === "backtest" ? "this backtest" : "kept across restarts";
+    $("fills").innerHTML = s.recent_fills.length ? s.recent_fills.slice(0, 12).map(x => `<tr><td>${whenLabel(x.ts, s.ts)}</td><td class="side-${x.side.toLowerCase()}">${x.side}</td><td>${fmt(x.price)}</td><td>${fmt(x.size, 2)}</td><td>${fmt(x.fee, 5)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">NO FILLS YET</td></tr>`;
   }
 
   // ---------- polling ----------
@@ -415,6 +421,7 @@
   $("b-resume").onclick = () => control("resume");
   $("b-kill").onclick = () => control("kill_on", "Engage the kill switch? The bot will not quote again until it is cleared.");
   $("b-unkill").onclick = () => control("kill_off");
+  $("b-reset").onclick = () => control("reset_paper", "Reset the paper account? Balances go back to CAPITAL_GBP, open trades are forgotten, and the trade counts start from zero. Past fills stay in the journal.");
 })();
 </script>
 </body>

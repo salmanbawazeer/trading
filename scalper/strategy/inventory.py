@@ -40,6 +40,18 @@ class Inventory:
         self.start_equity = eq
         self.day_start_equity = eq
 
+    def restore(
+        self,
+        gbp: Decimal,
+        usdt: Decimal,
+        start_equity: Decimal,
+        day_start_equity: Decimal,
+        fees_paid: Decimal,
+    ) -> None:
+        self.gbp, self.usdt = gbp, usdt
+        self.start_equity, self.day_start_equity = start_equity, day_start_equity
+        self.fees_paid = fees_paid
+
     def apply_fill(self, f: Fill) -> None:
         notional = f.price * f.size
         if f.side == "BUY":
