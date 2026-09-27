@@ -109,7 +109,18 @@ async def run_backtest(s: Settings, recording_glob: str) -> None:
     exchange = PaperExchange(meta, fees, book, paper_balances(s), clock)
     journal = Journal(s.data_dir / "backtest.sqlite", "backtest")
     engine = Engine(
-        s, exchange, meta, book, fair, inv, guards, journal, gate, clock, trade_sink=exchange.on_market_trade
+        s,
+        exchange,
+        meta,
+        book,
+        fair,
+        inv,
+        guards,
+        journal,
+        gate,
+        clock,
+        trade_sink=exchange.on_market_trade,
+        maker_fee_rate=fees.maker,
     )
     n = await replay(engine, clock, paths)
     mid = book.top().mid
@@ -211,6 +222,7 @@ async def run_paper(s: Settings) -> None:
         gate,
         time.time,
         trade_sink=exchange.on_market_trade,
+        maker_fee_rate=fees.maker,
     )
     feed = CoinbaseFeed(
         engine.on_message, public_subscriptions(s.product_id, [s.ref_usdt_usd, s.ref_btc_gbp, s.ref_btc_usd])
@@ -250,6 +262,7 @@ async def run_live(s: Settings) -> None:
         time.time,
         user_order_sink=live.on_user_order,
         seed_from_exchange=True,
+        maker_fee_rate=fees.maker,
     )
     public = CoinbaseFeed(
         engine.on_message, public_subscriptions(s.product_id, [s.ref_usdt_usd, s.ref_btc_gbp, s.ref_btc_usd])

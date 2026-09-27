@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     inventory_skew_ticks: Decimal = Decimal(2)
     fair_blend_weight: Decimal = Decimal("0.5")
     max_fair_basis_ticks: int = 10
+    # Profit lock: never sell a bought lot below cost + both maker fees + margin, and never
+    # buy back a sold lot above its price - both fees - margin.
+    profit_lock: bool = True
+    min_profit_ticks: int = 1
 
     # fees
     paper_maker_fee_rate: Decimal = Decimal(0)

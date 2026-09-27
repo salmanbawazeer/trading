@@ -7,6 +7,7 @@ clock differ.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -24,6 +25,7 @@ from scalper.marketdata.orderbook import OrderBook
 from scalper.observability import metrics as m
 from scalper.risk.guards import RiskGuards
 from scalper.strategy.inventory import Fill, Inventory
+from scalper.strategy.lots import LotBook
 from scalper.strategy.quoter import QuoteParams, Quotes, compute_quotes, size_for_notional
 from scalper.strategy.stats import aggregate, summarize
 
@@ -53,8 +55,11 @@ class Engine:
         trade_sink=None,
         user_order_sink=None,
         seed_from_exchange: bool = False,
+        maker_fee_rate: Decimal = Decimal(0),
     ) -> None:
         self.s = settings
+        self.maker_fee = maker_fee_rate
+        self.lots = LotBook(dust=meta.base_min_size)
         self.exchange = exchange
         self.meta = meta
         self.book = book
@@ -92,6 +97,12 @@ class Engine:
         self.last_series_ts = 0.0
         self.last_quotes: Quotes | None = None
         exchange.set_fill_callback(self.on_fill)
+        if seed_from_exchange:
+            # Live: real balances persist across restarts, so the open trades must too.
+            for ts, side, price, size in journal.all_fills():
+                self.lots.apply(side, Decimal(price), Decimal(size), ts)
+            if self.lots.buys or self.lots.sells:
+                log.info("open_trades_restored", buys=len(self.lots.buys), sells=len(self.lots.sells))
 
     # -- market data --------------------------------------------------------
     async def on_message(self, msg: dict, ts: float) -> None:
@@ -149,6 +160,7 @@ class Engine:
     # -- fills --------------------------------------------------------------
     async def on_fill(self, fill: Fill) -> None:
         self.inv.apply_fill(fill)
+        self.lots.apply(fill.side, fill.price, fill.size, fill.ts)
         self.last_fill = fill
         w = self.working.get(fill.side)
         if w is not None and w.order_id == fill.order_id:
@@ -208,7 +220,7 @@ class Engine:
             self.last_fair = fair
             vol = self.vol.range_ticks()
             dev = self.inv.deviation_fraction(mid)
-            quotes = compute_quotes(top, fair, vol, dev, self.params)
+            quotes = self._apply_profit_lock(compute_quotes(top, fair, vol, dev, self.params))
             self.last_quotes = quotes
             gate = await self._gate(quotes, top, mid, vol, dev, now)
             desired = {
@@ -251,6 +263,21 @@ class Engine:
                     self.inv.pnl(mid),
                     self.inv.day_pnl(mid),
                 )
+
+    def profit_limits(self) -> tuple[Decimal | None, Decimal | None]:
+        """(ask floor, bid ceiling) from open trades, or (None, None) when the lock is off."""
+        if not self.s.profit_lock:
+            return None, None
+        m, t, k = self.maker_fee, self.tick, self.s.min_profit_ticks
+        return self.lots.ask_floor(m, t, k), self.lots.bid_ceiling(m, t, k)
+
+    def _apply_profit_lock(self, q: Quotes) -> Quotes:
+        floor, ceiling = self.profit_limits()
+        ask = max(q.ask, floor) if (q.ask is not None and floor is not None) else q.ask
+        bid = min(q.bid, ceiling) if (q.bid is not None and ceiling is not None) else q.bid
+        if ask == q.ask and bid == q.bid:
+            return q
+        return dataclasses.replace(q, bid=bid, ask=ask, reason="profit_lock")
 
     async def _gate(
         self, quotes: Quotes, top, mid: Decimal, vol: Decimal, dev: Decimal, now: float
@@ -370,6 +397,7 @@ class Engine:
         now = self.clock()
         top = self.book.top()
         mid = top.mid
+        floor, ceiling = self.profit_limits()
         bids = sorted(self.book.bids.items(), key=lambda kv: kv[0], reverse=True)[:depth]
         asks = sorted(self.book.asks.items(), key=lambda kv: kv[0])[:depth]
         implied = self.fair_model.implied(now)
@@ -408,6 +436,15 @@ class Engine:
                 "ask": _f(q.ask) if q else None,
                 "half_spread_ticks": _f(q.half_spread_ticks) if q else None,
                 "skew_ticks": _f(q.skew_ticks) if q else None,
+                "profit_lock": self.s.profit_lock,
+                "ask_floor": _f(floor),
+                "bid_ceiling": _f(ceiling),
+                "open_buys": len(self.lots.buys),
+                "open_sells": len(self.lots.sells),
+                "open_buy_usdt": _f(self.lots.open_size("BUY")),
+                "open_sell_usdt": _f(self.lots.open_size("SELL")),
+                "cheapest_open_buy": _f(min((lt.price for lt in self.lots.buys), default=None)),
+                "dearest_open_sell": _f(max((lt.price for lt in self.lots.sells), default=None)),
             },
             "working": [
                 {

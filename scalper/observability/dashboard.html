@@ -180,6 +180,9 @@
       <div>target ask</div><div id="q-ask" class="side-sell">—</div>
       <div>half spread</div><div id="q-half">—</div>
       <div>skew</div><div id="q-skew">—</div>
+      <div>profit lock</div><div id="q-lock">—</div>
+      <div>sell no lower</div><div id="q-floor">—</div>
+      <div>buy no higher</div><div id="q-ceiling">—</div>
     </div>
   </section>
 
@@ -353,6 +356,9 @@
     $("q-bid").textContent = fmt(q.bid); $("q-ask").textContent = fmt(q.ask);
     $("q-half").textContent = q.half_spread_ticks != null ? fmt(q.half_spread_ticks, 1) + " ticks" : "—";
     $("q-skew").textContent = q.skew_ticks != null ? fmt(q.skew_ticks, 2) + " ticks" : "—";
+    $("q-lock").textContent = !q.profit_lock ? "OFF" : (q.open_buys || q.open_sells) ? `ON · ${q.open_buys} open buys · ${q.open_sells} open sells` : "ON · no open trades";
+    $("q-floor").textContent = q.ask_floor != null ? `${fmt(q.ask_floor)} (bought at ${fmt(q.cheapest_open_buy)})` : "—";
+    $("q-ceiling").textContent = q.bid_ceiling != null ? `${fmt(q.bid_ceiling)} (sold at ${fmt(q.dearest_open_sell)})` : "—";
     $("quotes-sub").textContent = `${s.working.length}/${s.risk.max_open_orders} open`;
     $("working").innerHTML = s.working.length ? s.working.map(w => `<tr><td class="side-${w.side.toLowerCase()}">${w.side}</td><td>${fmt(w.price)}</td><td>${fmt(w.size, 2)}</td><td>${w.age_s}s</td></tr>`).join("") : `<tr><td colspan="4" class="empty">NO WORKING ORDERS</td></tr>`;
 

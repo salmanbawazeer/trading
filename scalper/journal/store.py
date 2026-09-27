@@ -163,6 +163,13 @@ class Journal:
             for r in rows
         ]
 
+    def all_fills(self) -> list[tuple[float, str, str, str]]:
+        """(ts, side, price, size) for this journal's mode, oldest first."""
+        with self.lock:
+            return self.conn.execute(
+                "SELECT ts, side, price, size FROM fills WHERE mode = ? ORDER BY ts, rowid", (self.mode,)
+            ).fetchall()
+
     def fill_aggregates(self) -> dict[str, tuple[int, float, float, float]]:
         """All fills for this journal's mode: {side: (count, qty, notional, fees)}."""
         with self.lock:

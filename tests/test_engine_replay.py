@@ -84,6 +84,7 @@ def build(settings, meta, fees=ZERO_MAKER):
         JevGate(False),
         clock,
         trade_sink=ex.on_market_trade,
+        maker_fee_rate=fees.maker,
     )
     return engine, clock, journal
 

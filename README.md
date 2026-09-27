@@ -41,6 +41,25 @@ JSON behind it, for your own tooling: `/api/state`, `/api/series`, `/api/fills?l
 The port is bound to `127.0.0.1` in `docker-compose.yml`; put it behind an SSH tunnel or an
 authenticating reverse proxy before exposing it, there is no login.
 
+## Profit lock
+
+On by default (`PROFIT_LOCK=true`). Every fill is recorded as an open trade until the opposite
+side closes it:
+
+- After a **buy**, the sell quote is never below that buy price plus both maker fees plus
+  `MIN_PROFIT_TICKS`. With a 0.06% maker fee, a buy at 0.7500 can only be sold at 0.7511 or
+  higher.
+- After a **sell**, the buy-back quote is never above the sell price minus both fees minus the
+  margin.
+- The cheapest open buy is sold first, and the dearest open sell is bought back first.
+- USDT the bot started with has no entry price, so it is not restricted.
+- In live mode the open trades are rebuilt from the journal on restart.
+
+The trade-off: the bot never takes a loss to get flat. If the price falls after a buy, that
+USDT is held until the price recovers. Meanwhile the inventory limit stops further buying and
+the daily loss cap still watches the marked-to-market value. The Quotes panel on the dashboard
+shows the open trades and the current "sell no lower" and "buy no higher" prices.
+
 ## Risk controls (defaults for < £1,000)
 
 | Guard | Default | Env var |
