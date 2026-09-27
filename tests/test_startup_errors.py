@@ -57,6 +57,7 @@ def test_fee_check_raises_fatal_with_hint(tmp_path):
 
 class _FakeLive:
     error: Exception | None = None
+    measured: tuple = (None, "preview failed: test")
 
     def __init__(self, *a, **k):
         pass
@@ -67,7 +68,10 @@ class _FakeLive:
         return META
 
     async def fee_rates(self):
-        return FeeRates(Decimal(0), Decimal(0))
+        return FeeRates(Decimal("0.0006"), Decimal("0.0016"), "VIP 1")
+
+    async def pair_maker_rate(self, meta):
+        return self.measured
 
 
 @pytest.mark.parametrize(
@@ -133,3 +137,20 @@ def test_blocked_dashboard_served_and_escaped():
         assert state["blocked"] and "NOT VIABLE" in state["reason"]
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("measured", "maker", "label"),
+    [
+        ((Decimal(0), "preview of 133 @ 0.7474: commission 0"), Decimal(0), "USDT-GBP measured"),
+        ((Decimal("0.0006"), "preview"), Decimal("0.0006"), "USDT-GBP measured"),
+        ((None, "preview failed: boom"), Decimal("0.0006"), "account tier"),
+    ],
+)
+async def test_measured_pair_fee_is_preferred(monkeypatch, tmp_path, measured, maker, label):
+    import scalper.execution.coinbase_live as cl
+
+    monkeypatch.setattr(cl, "CoinbaseLiveExchange", type("L", (_FakeLive,), {"measured": measured}))
+    s = Settings(_env_file=None, data_dir=tmp_path, COINBASE_API_KEY="k", COINBASE_API_SECRET="s")
+    _meta, fees, _live = await main._resolve_meta_and_fees(s)
+    assert fees.maker == maker and label in fees.tier and fees.taker == Decimal("0.0016")

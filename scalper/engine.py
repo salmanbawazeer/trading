@@ -375,7 +375,8 @@ class Engine:
         w = self.working.get(side)
         if w is not None:
             stale = (now - w.placed_ts) > self.s.max_rest_seconds
-            if price is None or w.price != price or stale:
+            moved = price is not None and abs(w.price - price) > self.s.requote_tolerance_ticks * self.tick
+            if price is None or moved or stale:
                 await self._cancel_working(side, "requote" if price is not None else "no_quote")
             else:
                 return

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 import structlog
 
@@ -66,6 +66,7 @@ class CoinbaseLiveExchange:
         self.rest = RESTClient(api_key=api_key, api_secret=api_secret, rate_limit_headers=True)
         self.bucket = TokenBucket(requests_per_second)
         self._fill_cb: FillCallback | None = None
+        self.last_price: Decimal | None = None
         self._orders: dict[str, OpenOrder] = {}
         self._filled_so_far: dict[str, Decimal] = {}
 
@@ -76,12 +77,55 @@ class CoinbaseLiveExchange:
     # -- Exchange protocol ---------------------------------------------------
     async def product_meta(self) -> ProductMeta:
         p = await self._call(self.rest.get_product, self.product_id)
+        try:
+            self.last_price = Decimal(str(_field(p, "price"))) or None
+        except (InvalidOperation, TypeError):
+            self.last_price = None
         return ProductMeta(
             product_id=self.product_id,
             quote_increment=Decimal(p.quote_increment),
             base_increment=Decimal(p.base_increment),
             base_min_size=Decimal(p.base_min_size),
         )
+
+    async def pair_maker_rate(
+        self, meta: ProductMeta, notional_gbp: Decimal = Decimal(100)
+    ) -> tuple[Decimal | None, str]:
+        """Measure this product's own maker fee by previewing an order. Nothing is placed.
+
+        The account tier from transaction_summary does not reflect per-product pricing, so
+        it can disagree with what this pair actually costs. A post-only buy 1% below the
+        last price is a maker order; its previewed commission over its notional is the
+        pair's maker rate. GBP 100 is large enough that a real fee cannot round to zero.
+        """
+        if not self.last_price or self.last_price <= 0:
+            return None, "no last price for the product"
+        tick, step = meta.quote_increment, meta.base_increment
+        price = (self.last_price * Decimal("0.99") / tick).to_integral_value(ROUND_DOWN) * tick
+        if price <= 0:
+            return None, "zero preview price"
+        size = max((notional_gbp / price / step).to_integral_value(ROUND_DOWN) * step, meta.base_min_size)
+        notional = price * size
+        try:
+            resp = await self._call(
+                self.rest.preview_limit_order_gtc,
+                product_id=self.product_id,
+                side="BUY",
+                base_size=str(size),
+                limit_price=str(price),
+                post_only=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - measurement is best effort
+            return None, f"preview failed: {type(exc).__name__}: {str(exc)[:160]}"
+        raw = _field(resp, "commission_total")
+        errs = _field(resp, "errs") or []
+        try:
+            commission = Decimal(str(raw)) if raw not in (None, "") else None
+        except InvalidOperation:
+            commission = None
+        if commission is None or (commission == 0 and errs):
+            return None, f"preview gave no usable commission (commission={raw!r}, errs={errs})"
+        return commission / notional, f"preview of {size} @ {price}: commission {commission}"
 
     async def fee_rates(self) -> FeeRates:
         s = await self._call(self.rest.get_transaction_summary, product_type="SPOT")

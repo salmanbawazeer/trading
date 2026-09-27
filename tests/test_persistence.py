@@ -100,3 +100,46 @@ async def test_backtests_do_not_save_an_account(settings, meta, tmp_path):
     e, c, _ = build(settings, meta, journal=j)
     await feed(e, c, opening(), T)
     assert j.load_account() is None and e.persist is False
+
+
+async def test_requote_tolerance_keeps_orders_in_place(settings, meta, tmp_path):
+    s = settings.model_copy(update={"requote_tolerance_ticks": 2, "max_rest_seconds": 3600})
+    e, c, _ = build(s, meta)
+    await feed(e, c, opening(), T)
+    bid0 = e.working["BUY"]
+    # fair moves by one tick: within tolerance, the order is left alone (queue position kept)
+    await feed(
+        e,
+        c,
+        [
+            l2(
+                "USDT-GBP",
+                [
+                    ("bid", "0.7500", "0"),
+                    ("bid", "0.7501", "5000"),
+                    ("offer", "0.7502", "0"),
+                    ("offer", "0.7503", "4000"),
+                ],
+            )
+        ],
+        T + 10,
+    )
+    assert e.working["BUY"] is bid0
+    # three ticks: beyond tolerance, it is replaced
+    await feed(
+        e,
+        c,
+        [
+            l2(
+                "USDT-GBP",
+                [
+                    ("bid", "0.7501", "0"),
+                    ("bid", "0.7503", "5000"),
+                    ("offer", "0.7503", "0"),
+                    ("offer", "0.7505", "4000"),
+                ],
+            )
+        ],
+        T + 20,
+    )
+    assert e.working["BUY"] is not bid0 and e.working["BUY"].price == D("0.7503")

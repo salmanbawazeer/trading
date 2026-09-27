@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     vol_window_seconds: float = 30.0
     requote_min_interval_s: float = 1.0
     max_rest_seconds: float = 30.0
+    # Leave a resting order alone unless the target has moved at least this many ticks.
+    # 0 = replace on any change. Higher keeps queue position on slow books.
+    requote_tolerance_ticks: int = 0
     inventory_skew_ticks: Decimal = Decimal(2)
     fair_blend_weight: Decimal = Decimal("0.5")
     max_fair_basis_ticks: int = 10

@@ -59,6 +59,27 @@ To start the paper account over, press **Reset paper** on the dashboard. Balance
 `CAPITAL_GBP`, and counts and open trades start from zero. Old fills stay in the journal but
 are no longer counted. `docker compose down -v` deletes the volume and everything in it.
 
+## Speed profile (zero-fee accounts only)
+
+At startup the bot measures this pair's real maker fee with an order preview, which places
+nothing, and logs it as `pair_fee_measured`. The account tier alone can be wrong because
+Coinbase prices some pairs separately. If the measured fee is **0%**, tight and frequent
+quoting becomes viable and these settings make sense:
+
+```
+MIN_EDGE_TICKS=1            # quote one tick from fair; with zero fees any tick is profit
+REQUOTE_MIN_INTERVAL_S=0.25 # re-evaluate four times a second
+REQUOTE_TOLERANCE_TICKS=1   # do not replace an order for a one-tick wobble (keeps queue position)
+MAX_REST_SECONDS=120        # let an unchanged order sit and work its way up the queue
+FAIR_BLEND_WEIGHT=0.2       # lean on the pair's own book so quotes sit evenly around it
+REST_REQUESTS_PER_SECOND=10 # Coinbase allows ~30/s on private endpoints; stay well under
+```
+
+The profit lock still applies: with a 0% fee it simply means every sell is at least one tick
+above its buy. If the measured fee is not zero, these settings lose money on every round
+trip, and the fee check will refuse to start with `MIN_EDGE_TICKS=1`. That refusal is the
+bot telling you the fee is real.
+
 ## Profit lock
 
 On by default (`PROFIT_LOCK=true`). Every fill is recorded as an open trade until the opposite

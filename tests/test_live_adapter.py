@@ -12,9 +12,24 @@ class FakeRest:
     def __init__(self):
         self.orders = []
         self.cancelled = []
+        self.preview_errs: list = []
+
+    preview_commission = "0.06"  # GBP on a ~GBP 100 preview -> 0.06 % maker
+    preview_exc: Exception | None = None
 
     def get_product(self, product_id):
-        return SimpleNamespace(quote_increment="0.0001", base_increment="0.01", base_min_size="1")
+        return SimpleNamespace(
+            quote_increment="0.0001", base_increment="0.01", base_min_size="1", price="0.7550"
+        )
+
+    def preview_limit_order_gtc(self, **kw):
+        self.preview_kw = kw
+        if self.preview_exc:
+            raise self.preview_exc
+        # nested fields come back as raw values, like the real SDK
+        return SimpleNamespace(
+            commission_total=self.preview_commission, errs=self.preview_errs, order_total="100"
+        )
 
     def get_transaction_summary(self, product_type=None):
         # The real SDK stores nested fields as raw dicts despite its type annotations.
@@ -134,3 +149,29 @@ async def test_token_bucket_limits_rate():
     for _ in range(4):
         await b.acquire()
     assert time.monotonic() - t0 >= 0.05
+
+
+async def test_pair_maker_rate_measures_from_preview(live):
+    meta = await live.product_meta()
+    assert live.last_price == Decimal("0.7550")
+    rate, note = await live.pair_maker_rate(meta)
+    kw = live.rest.preview_kw
+    assert kw["post_only"] is True and kw["side"] == "BUY"
+    assert Decimal(kw["limit_price"]) == Decimal("0.7474")  # 1 % below, rounded down to the tick
+    notional = Decimal(kw["limit_price"]) * Decimal(kw["base_size"])
+    assert Decimal(99) < notional <= Decimal(100)
+    assert rate == Decimal("0.06") / notional and "preview of" in note
+    # a genuinely free pair measures as exactly zero
+    live.rest.preview_commission = "0"
+    assert (await live.pair_maker_rate(meta))[0] == 0
+    # zero commission alongside errors is not trusted
+    live.rest.preview_errs = [{"error": "INSUFFICIENT_FUND"}]
+    rate, note = await live.pair_maker_rate(meta)
+    assert rate is None and "errs" in note
+    live.rest.preview_errs = []
+    live.rest.preview_exc = RuntimeError("boom")
+    rate, note = await live.pair_maker_rate(meta)
+    assert rate is None and "preview failed" in note
+    live.rest.preview_exc = None
+    live.last_price = None
+    assert (await live.pair_maker_rate(meta))[0] is None

@@ -184,6 +184,15 @@ async def _resolve_meta_and_fees(s: Settings):
                 "'organizations/.../apiKeys/...' name, the secret matches it, and the key has View + Trade."
             ) from exc
         raise
+    measured, note = await live.pair_maker_rate(meta)
+    if measured is not None:
+        log.info(
+            "pair_fee_measured", product=s.product_id, maker=f"{measured:.6%}", tier=fees.tier, note=note
+        )
+        fees = FeeRates(maker=measured, taker=fees.taker, tier=f"{fees.tier} · {s.product_id} measured")
+    else:
+        log.warning("pair_fee_unavailable", product=s.product_id, reason=note, using=f"{fees.maker:.6%}")
+        fees = FeeRates(maker=fees.maker, taker=fees.taker, tier=f"{fees.tier} · account tier ({note})")
     return meta, fees, live
 
 
