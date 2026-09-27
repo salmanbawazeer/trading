@@ -20,6 +20,20 @@ from scalper.strategy.inventory import Fill
 log = structlog.get_logger(__name__)
 
 
+def _field(obj, key: str, default=None):
+    """Read `key` from a dict or an attribute object.
+
+    The SDK annotates nested response fields as typed objects but stores the raw
+    dict it received (only top-level lists such as `orders` are wrapped), so the
+    adapter must accept both shapes.
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 class TokenBucket:
     def __init__(self, rate_per_s: float, burst: int | None = None) -> None:
         self.rate = rate_per_s
@@ -71,11 +85,13 @@ class CoinbaseLiveExchange:
 
     async def fee_rates(self) -> FeeRates:
         s = await self._call(self.rest.get_transaction_summary, product_type="SPOT")
-        tier = s.fee_tier
+        tier = _field(s, "fee_tier")
+        if tier is None:
+            raise RuntimeError("transaction_summary response carried no fee_tier")
         return FeeRates(
-            maker=Decimal(str(tier.maker_fee_rate)),
-            taker=Decimal(str(tier.taker_fee_rate)),
-            tier=str(tier.pricing_tier),
+            maker=Decimal(str(_field(tier, "maker_fee_rate", "0"))),
+            taker=Decimal(str(_field(tier, "taker_fee_rate", "0"))),
+            tier=str(_field(tier, "pricing_tier", "unknown")),
         )
 
     async def balances(self) -> dict[str, Decimal]:
@@ -84,8 +100,10 @@ class CoinbaseLiveExchange:
         while True:
             resp = await self._call(self.rest.get_accounts, limit=250, cursor=cursor)
             for a in resp.accounts:
-                if a.available_balance is not None:
-                    out[a.currency] = out.get(a.currency, Decimal(0)) + Decimal(a.available_balance["value"])
+                bal = _field(a, "available_balance")
+                cur = _field(a, "currency")
+                if bal is not None and cur:
+                    out[cur] = out.get(cur, Decimal(0)) + Decimal(str(_field(bal, "value", "0")))
             if not getattr(resp, "has_next", False):
                 break
             cursor = resp.cursor
@@ -107,15 +125,14 @@ class CoinbaseLiveExchange:
             post_only=True,
         )
         if not resp.success:
-            err = resp.error_response or resp.failure_reason or {}
-            if isinstance(err, dict):
-                reason = err.get("error") or err.get("message") or str(err)
-            else:
-                reason = getattr(err, "error", None) or getattr(err, "message", None) or str(err)
+            err = _field(resp, "error_response") or _field(resp, "failure_reason") or {}
+            reason = _field(err, "error") or _field(err, "message") or str(err)
             log.warning("order_rejected", side=side, price=str(price), size=str(size), reason=reason)
             return OrderAck(False, None, client_order_id, reason)
-        oid = resp.success_response["order_id"] if isinstance(resp.success_response, dict) else resp.order_id
-        oid = oid or resp.order_id
+        oid = _field(_field(resp, "success_response"), "order_id") or _field(resp, "order_id")
+        if not oid:
+            log.error("order_ack_without_id", response=str(resp))
+            return OrderAck(False, None, client_order_id, "no_order_id_in_response")
         self._orders[oid] = OpenOrder(oid, client_order_id, side, price, size, time.time())
         return OrderAck(True, oid, client_order_id)
 
@@ -128,7 +145,7 @@ class CoinbaseLiveExchange:
 
     async def cancel_all(self) -> int:
         resp = await self._call(self.rest.list_orders, product_ids=[self.product_id], order_status=["OPEN"])
-        ids = [o.order_id for o in resp.orders]
+        ids = [_field(o, "order_id") for o in (_field(resp, "orders") or []) if _field(o, "order_id")]
         if ids:
             await self.cancel(ids)
         self._orders.clear()

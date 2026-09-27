@@ -17,17 +17,19 @@ class FakeRest:
         return SimpleNamespace(quote_increment="0.0001", base_increment="0.01", base_min_size="1")
 
     def get_transaction_summary(self, product_type=None):
+        # The real SDK stores nested fields as raw dicts despite its type annotations.
         return SimpleNamespace(
-            fee_tier=SimpleNamespace(
-                maker_fee_rate="0", taker_fee_rate="0.00001", pricing_tier="Stable Pairs"
-            )
+            fee_tier={"maker_fee_rate": "0", "taker_fee_rate": "0.00001", "pricing_tier": "Stable Pairs"}
         )
 
     def get_accounts(self, limit=None, cursor=None):
         return SimpleNamespace(
             accounts=[
                 SimpleNamespace(currency="GBP", available_balance={"value": "500.5"}),
-                SimpleNamespace(currency="USDT", available_balance={"value": "600"}),
+                SimpleNamespace(
+                    currency="USDT", available_balance=SimpleNamespace(value="600")
+                ),  # object form too
+                SimpleNamespace(currency="EUR", available_balance=None),
             ],
             has_next=False,
             cursor=None,
@@ -37,7 +39,11 @@ class FakeRest:
         self.orders.append(kw)
         if kw["limit_price"] == "9":
             return SimpleNamespace(
-                success=False, error_response={"error": "INVALID_PRICE"}, order_id=None, success_response=None
+                success=False,
+                error_response={"error": "INVALID_PRICE", "message": "Price out of range"},
+                failure_reason={"error": "UNKNOWN_FAILURE_REASON"},
+                order_id=None,
+                success_response=None,
             )
         return SimpleNamespace(
             success=True, order_id="o1", success_response={"order_id": "o1"}, error_response=None
