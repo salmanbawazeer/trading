@@ -103,7 +103,9 @@ async def test_backtests_do_not_save_an_account(settings, meta, tmp_path):
 
 
 async def test_requote_tolerance_keeps_orders_in_place(settings, meta, tmp_path):
-    s = settings.model_copy(update={"requote_tolerance_ticks": 2, "max_rest_seconds": 3600})
+    s = settings.model_copy(
+        update={"requote_tolerance_ticks": 1, "max_rest_seconds": 3600, "fair_blend_weight": D(0)}
+    )
     e, c, _ = build(s, meta)
     await feed(e, c, opening(), T)
     bid0 = e.working["BUY"]
@@ -125,7 +127,7 @@ async def test_requote_tolerance_keeps_orders_in_place(settings, meta, tmp_path)
         T + 10,
     )
     assert e.working["BUY"] is bid0
-    # three ticks: beyond tolerance, it is replaced
+    # two ticks: beyond tolerance, it is replaced
     await feed(
         e,
         c,
@@ -142,4 +144,4 @@ async def test_requote_tolerance_keeps_orders_in_place(settings, meta, tmp_path)
         ],
         T + 20,
     )
-    assert e.working["BUY"] is not bid0 and e.working["BUY"].price == D("0.7503")
+    assert e.working["BUY"] is not bid0 and e.working["BUY"].price == D("0.7502")
